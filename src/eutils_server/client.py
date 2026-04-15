@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -33,7 +34,7 @@ class EUtilsClient:
     """Small async client for read-only NCBI E-utilities access."""
 
     def __init__(self, base_url: str = BASE_URL, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout, follow_redirects=True)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -57,6 +58,22 @@ class EUtilsClient:
     async def efetch(self, *, params: dict[str, Any]) -> str:
         request_params = dict(params)
         return await self._request_text(UTILITY_PATHS["efetch"], params=request_params)
+
+    async def epost(self, *, params: dict[str, Any]) -> str:
+        return await self._request_text(UTILITY_PATHS["epost"], params=params)
+
+    async def elink(self, *, params: dict[str, Any]) -> dict[str, Any]:
+        request_params = {"retmode": "json", **params}
+        return await self._request_json(UTILITY_PATHS["elink"], params=request_params)
+
+    async def egquery(self, *, term: str) -> str:
+        return await self._request_text("https://eutils.ncbi.nlm.nih.gov/gquery/", params={"term": term})
+
+    async def espell(self, *, params: dict[str, Any]) -> str:
+        return await self._request_text(UTILITY_PATHS["espell"], params=params)
+
+    async def ecitmatch(self, *, params: dict[str, Any]) -> str:
+        return await self._request_text(UTILITY_PATHS["ecitmatch"], params=params)
 
     async def ensure_valid_db(self, db: str) -> None:
         databases = await self.list_databases()
@@ -286,6 +303,170 @@ def summarize_efetch_response(
     return payload
 
 
+def summarize_epost_response(
+    payload_text: str,
+    *,
+    db: str,
+    ids: list[str],
+    include_raw: bool,
+) -> dict[str, Any]:
+    try:
+        root = ET.fromstring(payload_text)
+    except ET.ParseError as exc:
+        raise EUtilsClientError("NCBI returned malformed XML for EPost.") from exc
+
+    payload: dict[str, Any] = {
+        "utility": "epost",
+        "db": db,
+        "count": len(ids),
+        "query_key": root.findtext(".//QueryKey"),
+        "webenv": root.findtext(".//WebEnv"),
+    }
+    if include_raw:
+        payload["raw_payload"] = payload_text
+    return payload
+
+
+def summarize_elink_response(data: dict[str, Any], *, include_raw: bool) -> dict[str, Any]:
+    linksets = data.get("linksets", []) or []
+    normalized_linksets: list[dict[str, Any]] = []
+
+    for linkset in linksets:
+        entries = []
+        for linksetdb in linkset.get("linksetdbs", []) or []:
+            links = linksetdb.get("links", []) or []
+            entries.append(
+                {
+                    "db_to": linksetdb.get("dbto"),
+                    "link_name": linksetdb.get("linkname"),
+                    "count": len(links),
+                    "links": links,
+                }
+            )
+
+        history = []
+        for history_item in linkset.get("linksetdbhistories", []) or []:
+            history.append(
+                {
+                    "db_to": history_item.get("dbto"),
+                    "link_name": history_item.get("linkname"),
+                    "query_key": history_item.get("querykey"),
+                    "webenv": history_item.get("webenv"),
+                    "count": _safe_int(history_item.get("count")),
+                }
+            )
+
+        normalized_linksets.append(
+            {
+                "db_from": linkset.get("dbfrom"),
+                "ids": linkset.get("ids", []) or [],
+                "links": entries,
+                "history": history,
+            }
+        )
+
+    payload: dict[str, Any] = {
+        "utility": "elink",
+        "linkset_count": len(normalized_linksets),
+        "linksets": normalized_linksets,
+    }
+    if include_raw:
+        payload["raw"] = data
+    return payload
+
+
+def summarize_egquery_response(html: str, *, term: str, include_raw: bool) -> dict[str, Any]:
+    results = []
+    pattern = re.compile(
+        r'<td class="nn"><a [^>]*id="(?P<db>[^"]+)"[^>]*>(?P<label>[^<]+)</a></td>\s*'
+        r'<td class="cc"><span>(?P<count>[^<]+)</span></td>\s*'
+        r'<td class="dd">(?P<description>[^<]*)</td>',
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(html):
+        count_text = match.group("count").replace(",", "").strip()
+        results.append(
+            {
+                "db": match.group("db").strip(),
+                "label": _html_unescape(match.group("label").strip()),
+                "count": _safe_int(count_text, default=0),
+                "description": _html_unescape(match.group("description").strip()),
+            }
+        )
+
+    payload: dict[str, Any] = {
+        "utility": "egquery",
+        "term": term,
+        "result_count": len(results),
+        "results": results,
+    }
+    if include_raw:
+        payload["raw_html"] = html
+    return payload
+
+
+def summarize_espell_response(payload_text: str, *, include_raw: bool) -> dict[str, Any]:
+    try:
+        root = ET.fromstring(payload_text)
+    except ET.ParseError as exc:
+        raise EUtilsClientError("NCBI returned malformed XML for ESpell.") from exc
+
+    replaced_terms = [node.text for node in root.findall(".//SpelledQuery/Replaced") if node.text]
+    payload: dict[str, Any] = {
+        "utility": "espell",
+        "database": root.findtext(".//Database"),
+        "query": root.findtext(".//Query"),
+        "corrected_query": root.findtext(".//CorrectedQuery"),
+        "replaced": replaced_terms,
+    }
+    error_text = root.findtext(".//ERROR")
+    if error_text:
+        payload["error"] = error_text
+    if include_raw:
+        payload["raw_payload"] = payload_text
+    return payload
+
+
+def summarize_ecitmatch_response(
+    payload_text: str,
+    *,
+    citations: list[str],
+    include_raw: bool,
+) -> dict[str, Any]:
+    matches = []
+    unmatched = []
+
+    for line in payload_text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("|")
+        if len(parts) < 7:
+            continue
+        citation = "|".join(parts[:-1])
+        result = parts[-1].strip()
+        entry = {
+            "citation": citation,
+            "submitted_key": parts[-2].strip(),
+            "result": result,
+        }
+        if result.isdigit():
+            entry["pmid"] = result
+            matches.append(entry)
+        else:
+            unmatched.append(entry)
+
+    payload: dict[str, Any] = {
+        "utility": "ecitmatch",
+        "submitted_count": len(citations),
+        "match_count": len(matches),
+        "matches": matches,
+        "unmatched": unmatched,
+    }
+    if include_raw:
+        payload["raw_payload"] = payload_text
+    return payload
+
+
 def _summarize_efetch_xml(payload_text: str) -> dict[str, Any]:
     try:
         root = ET.fromstring(payload_text)
@@ -374,3 +555,13 @@ def _safe_int(value: Any, default: int | None = None) -> int | None:
 
 def _strip_namespace(tag: str) -> str:
     return tag.split("}", 1)[-1]
+
+
+def _html_unescape(value: str) -> str:
+    return (
+        value.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+    )

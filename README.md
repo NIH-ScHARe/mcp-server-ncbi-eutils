@@ -223,10 +223,12 @@ mcp-server-ncbi-eutils/
 - Tool names and responsibilities specified
 - `client.py` implemented with shared request handling, throttling, and retry logic
 - `eutils_info`, `eutils_search`, `eutils_summary`, and `eutils_fetch` implemented
-- Remaining utilities and workflow helpers still pending
+- `eutils_post`, `eutils_link`, `eutils_global_query`, `eutils_spell`, and `eutils_citation_match` implemented
+- `eutils_global_query` currently parses the live NCBI `gquery` HTML results page as a compatibility layer
+- `eutils_search_and_summary`, `eutils_search_and_fetch`, and `eutils_find_related` implemented
 
 ## Next build order
 
-1. Implement `eutils_post`, `eutils_link`, `eutils_global_query`, `eutils_spell`, and `eutils_citation_match`.
-2. Add workflow helpers after the core tools are stable.
-3. Expand normalization for non-PubMed databases and more `EFetch` format combinations.
+1. Expand normalization for non-PubMed databases and more `EFetch` format combinations.
+2. Refine edge-case handling for `ELink` history outputs and `ECitMatch` non-match statuses.
+3. Add richer result shaping for workflow outputs when models need more compact summaries.
