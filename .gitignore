@@ -1,0 +1,17 @@
+# ignore virtual environment
+.venv/
+
+# ignore pycache
+__pycache__/
+
+# ignore claude 
+.claude/
+
+# ignore build artifacts
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+.databricks/
+src/eutils_server/config.py
