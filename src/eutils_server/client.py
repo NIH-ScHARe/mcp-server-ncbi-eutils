@@ -332,6 +332,7 @@ def _summarize_efetch_text(payload_text: str) -> dict[str, Any]:
     non_empty = [line for line in lines if line.strip()]
     return {
         "record_count": _count_text_records(payload_text),
+        "body": payload_text,
         "preview": non_empty[:20],
     }
 
