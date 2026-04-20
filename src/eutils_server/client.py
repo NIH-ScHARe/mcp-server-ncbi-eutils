@@ -296,7 +296,8 @@ def summarize_efetch_response(
     if normalized_retmode == "xml":
         payload.update(_summarize_efetch_xml(payload_text))
     else:
-        payload.update(_summarize_efetch_text(payload_text))
+        payload.update(_summarize_efetch_text(payload_text, include_raw=include_raw))
+        return payload
 
     if include_raw:
         payload["raw_payload"] = payload_text
@@ -508,14 +509,17 @@ def _summarize_xml_record(element: ET.Element) -> dict[str, Any]:
     return record
 
 
-def _summarize_efetch_text(payload_text: str) -> dict[str, Any]:
+def _summarize_efetch_text(payload_text: str, *, include_raw: bool) -> dict[str, Any]:
     lines = [line.rstrip() for line in payload_text.splitlines()]
     non_empty = [line for line in lines if line.strip()]
-    return {
+    payload: dict[str, Any] = {
         "record_count": _count_text_records(payload_text),
-        "body": payload_text,
+        "body": non_empty,
         "preview": non_empty[:20],
     }
+    if include_raw:
+        payload["raw_payload"] = payload_text
+    return payload
 
 
 def _count_text_records(payload_text: str) -> int:
